@@ -1814,7 +1814,7 @@ function(
         ).trim();
 
 
-    if (nickname.length < 2)
+    if (nickname.length < 9)
     {
         return {
             success:
