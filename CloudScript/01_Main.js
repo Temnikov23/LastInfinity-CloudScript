@@ -1343,27 +1343,6 @@ handlers.rejectFriendRequest = function(
 // GET FRIENDS
 // ============================================================
 
-handlers.getFriends = function(
-    args,
-    context
-)
-{
-    var friends =
-        GetInternalList(
-            currentPlayerId,
-            "Friends"
-        );
-
-
-    return {
-        success:
-            true,
-
-        friends:
-            friends
-    };
-};
-
 
 // ============================================================
 // REMOVE FRIEND
