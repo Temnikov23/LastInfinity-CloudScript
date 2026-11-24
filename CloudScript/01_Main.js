@@ -3745,8 +3745,10 @@ function isPropertyMissing(e) {
 // ----------------------------------------------------------------------------
 
 function propsAvailable() {
-    return typeof server.GetPlayerCustomProperty === "function" &&
-           typeof server.UpdatePlayerCustomProperties === "function";
+    // Player Custom Properties API is not available in PlayFab Legacy
+    // CloudScript. Craft inventory state lives in User Read-Only Data
+    // (loadRot / saveRot). Kept for compatibility with existing callers.
+    return false;
 }
 
 // CAS включён, если API Custom Properties доступен и его не отключили в Title Data
@@ -3843,63 +3845,31 @@ function saveRot(playFabId, newState) {
 //            { ok:false, error, conflict }
 // Автоматический fallback НЕ выполняется — вызывающий код сам решает.
 function loadProps(playFabId) {
-    try {
-        var response = server.GetPlayerCustomProperty({
-            PlayFabId: playFabId,
-            PropertyName: PROP_NAME
-        });
+    // Compatibility wrapper: Custom Properties -> User Read-Only Data.
+    // Return shape is preserved: { ok, state, version, hasProperty }.
+    var rot = loadRot(playFabId);
 
-        var version = 0;
+    if (rot.corrupt) return { corrupt: true, error: rot.error };
+    if (!rot.ok) return { ok: false, error: rot.error, conflict: false };
 
-        if (response && typeof response.PropertiesVersion === "number") {
-            version = response.PropertiesVersion;
-        }
-
-        var hasProperty = !!(response && response.Property &&
-                             response.Property.Name === PROP_NAME);
-
-        var raw = hasProperty ? String(response.Property.Value || "") : "";
-        var parsed = parseStateResult(raw);
-
-        if (parsed.kind === "corrupt") {
-            logStateCorrupt(PROP_NAME + " (Player Custom Properties)", parsed);
-            return { corrupt: true, error: "инвентарь повреждён" };
-        }
-
-        return {
-            ok: true,
-            state: parsed.state, // missing → пустой инвентарь
-            version: version,
-            hasProperty: hasProperty
-        };
-    } catch (e) {
-        // свойство ещё не создано — это не сбой, а нормальное отсутствие
-        if (isPropertyMissing(e)) {
-            return { ok: true, state: emptyState(), version: 0, hasProperty: false };
-        }
-
-        return { ok: false, error: errText(e), conflict: isVersionConflict(e) };
-    }
+    return {
+        ok: true,
+        state: rot.state,
+        version: 0,
+        hasProperty: rot.hasData === true
+    };
 }
 
 function saveProps(playFabId, newState, expectedVersion) {
-    try {
-        var response = server.UpdatePlayerCustomProperties({
-            PlayFabId: playFabId,
-            ExpectedPropertiesVersion: expectedVersion,
-            Properties: [
-                { Name: PROP_NAME, Value: JSON.stringify(newState) }
-            ]
-        });
+    // Compatibility wrapper: Custom Properties -> User Read-Only Data.
+    // expectedVersion is kept in the signature; Read-Only Data has no CAS.
+    var saved = saveRot(playFabId, newState);
 
-        if (response && typeof response.PropertiesVersion === "number") {
-            return { ok: true };
-        }
-
-        return { ok: false, conflict: false, error: "нет ответа UpdatePlayerCustomProperties" };
-    } catch (e) {
-        return { ok: false, conflict: isVersionConflict(e), error: errText(e) };
-    }
+    return {
+        ok: saved.ok === true,
+        conflict: false,
+        error: saved.error || ""
+    };
 }
 
 // Зеркало в Read-Only Data — только для Game Manager и клиентского
@@ -6559,68 +6529,41 @@ function moderationParseState(raw) {
 }
 
 function moderationLoadState(playFabId) {
-    try {
-        var response = server.GetPlayerCustomProperty({
-            PlayFabId: playFabId,
-            PropertyName: MODERATION_STATE_PROP
-        });
+    // Custom Properties -> User Internal Data via the shared mechanism.
+    var state = modReadState(playFabId, MODERATION_KEY);
 
-        var version = 0;
-
-        if (response && typeof response.PropertiesVersion === "number") {
-            version = response.PropertiesVersion;
-        }
-
-        var hasProperty = !!(response && response.Property &&
-            response.Property.Name === MODERATION_STATE_PROP);
-
-        var raw = hasProperty ? String(response.Property.Value || "") : "";
-
-        return {
-            ok: true,
-            state: moderationParseState(raw),
-            version: version,
-            hasProperty: hasProperty
-        };
-    } catch (e) {
-        // Отсутствие свойства — это норма для игрока без модерации.
-        if (isPropertyMissing(e)) {
-            return {
-                ok: true,
-                state: moderationEmptyState(),
-                version: 0,
-                hasProperty: false
-            };
-        }
-
+    if (modLastReadError) {
         return {
             ok: false,
             state: moderationEmptyState(),
             version: 0,
             hasProperty: false,
-            error: errText(e)
+            error: modLastReadError
         };
     }
+
+    var present = !!(state && typeof state === "object" &&
+        Object.keys(state).length > 0);
+
+    return {
+        ok: true,
+        state: present ? state : moderationEmptyState(),
+        version: 0,
+        hasProperty: present
+    };
 }
 
 function moderationSaveState(playFabId, state, expectedVersion) {
-    try {
-        var response = server.UpdatePlayerCustomProperties({
-            PlayFabId: playFabId,
-            ExpectedPropertiesVersion: expectedVersion,
-            Properties: [
-                { Name: MODERATION_STATE_PROP, Value: JSON.stringify(state) }
-            ]
-        });
+    // Custom Properties -> User Internal Data via the shared mechanism.
+    var saved = modWriteState(playFabId, state, MODERATION_KEY);
 
-        if (response && typeof response.PropertiesVersion === "number") {
-            return { ok: true };
-        }
+    if (saved && saved.ok) return { ok: true };
 
-        return { ok: false, conflict: false, error: "нет ответа UpdatePlayerCustomProperties" };
-    } catch (e) {
-        return { ok: false, conflict: isVersionConflict(e), error: errText(e) };
-    }
+    return {
+        ok: false,
+        conflict: false,
+        error: (saved && saved.error) ? saved.error : "modWriteState failed"
+    };
 }
 
 // Запись состояния с повтором при конфликте версий (CAS).
@@ -6671,16 +6614,24 @@ function moderationStoreState(playFabId, mutate) {
 
 function moderationMuteActive(mute, now) {
     if (!moderationPlainObject(mute)) return false;
-    if (mute.permanent === true) return true;
+    if (mute.permanent === true || mute.Permanent === true) return true;
 
-    return toInt(mute.expiresAtMs) > now;
+    // Both field spellings exist in stored records: the moderation panel
+    // uses expiresAtMs, while the mute system writes ExpiresAt.
+    var expires = toInt(mute.expiresAtMs);
+    if (!expires) expires = toInt(mute.ExpiresAt);
+
+    return expires > now;
 }
 
 function moderationBanActive(ban, now) {
     if (!moderationPlainObject(ban)) return false;
-    if (ban.permanent === true) return true;
+    if (ban.permanent === true || ban.Permanent === true) return true;
 
-    return toInt(ban.expiresAtMs) > now;
+    var expires = toInt(ban.expiresAtMs);
+    if (!expires) expires = toInt(ban.ExpiresAt);
+
+    return expires > now;
 }
 
 function moderationResolveDuration(minutes, permanent, allowed) {
@@ -6864,7 +6815,22 @@ handlers.Moderation_GetChatGuard = function (args, context) {
     var actor = moderationTrim(currentPlayerId);
     var loaded = moderationLoadState(actor);
     var now = moderationNow();
-    var state = loaded.ok ? loaded.state : moderationEmptyState();
+    if (!loaded.ok) {
+        return {
+            success: false,
+            verified: false,
+            playFabId: actor,
+            allowed: false,
+            muted: false,
+            banned: false,
+            muteReason: "",
+            muteExpiresAtMs: 0,
+            serverNowMs: now,
+            error: snippet(loaded.error)
+        };
+    }
+
+    var state = loaded.state;
     var muted = moderationMuteActive(state.mute, now);
     var banned = moderationBanActive(state.ban, now);
 
@@ -7100,67 +7066,41 @@ function moderationParsePresence(raw) {
 }
 
 function moderationLoadPresence(playFabId) {
-    try {
-        var response = server.GetPlayerCustomProperty({
-            PlayFabId: playFabId,
-            PropertyName: MODERATION_PRESENCE_PROP
-        });
+    // Presence is kept in its own Internal Data key so moderation_state
+    // (mutes, bans, logs) is never overwritten.
+    var stored = modReadState(playFabId, MODERATION_PRESENCE_PROP);
 
-        var version = 0;
-
-        if (response && typeof response.PropertiesVersion === "number") {
-            version = response.PropertiesVersion;
-        }
-
-        var hasProperty = !!(response && response.Property &&
-            response.Property.Name === MODERATION_PRESENCE_PROP);
-
-        var raw = hasProperty ? String(response.Property.Value || "") : "";
-
-        return {
-            ok: true,
-            presence: moderationParsePresence(raw),
-            version: version,
-            hasProperty: hasProperty
-        };
-    } catch (e) {
-        if (isPropertyMissing(e)) {
-            return {
-                ok: true,
-                presence: moderationEmptyPresence(),
-                version: 0,
-                hasProperty: false
-            };
-        }
-
+    if (modLastReadError) {
         return {
             ok: false,
             presence: moderationEmptyPresence(),
             version: 0,
             hasProperty: false,
-            error: errText(e)
+            error: modLastReadError
         };
     }
+
+    var present = !!(stored && typeof stored === "object" &&
+        Object.keys(stored).length > 0);
+
+    return {
+        ok: true,
+        presence: present ? stored : moderationEmptyPresence(),
+        version: 0,
+        hasProperty: present
+    };
 }
 
 function moderationSavePresence(playFabId, presence, expectedVersion) {
-    try {
-        var response = server.UpdatePlayerCustomProperties({
-            PlayFabId: playFabId,
-            ExpectedPropertiesVersion: expectedVersion,
-            Properties: [
-                { Name: MODERATION_PRESENCE_PROP, Value: JSON.stringify(presence) }
-            ]
-        });
+    var saved = modWriteState(playFabId, presence, MODERATION_PRESENCE_PROP);
 
-        if (response && typeof response.PropertiesVersion === "number") {
-            return { ok: true };
-        }
+    if (saved && saved.ok) return { ok: true };
 
-        return { ok: false, conflict: false, error: "no UpdatePlayerCustomProperties response" };
-    } catch (e) {
-        return { ok: false, conflict: isVersionConflict(e), error: errText(e) };
-    }
+    return {
+        ok: false,
+        conflict: false,
+        error: (saved && saved.error) ? saved.error : "modWriteState failed"
+    };
 }
 
 
@@ -8148,13 +8088,15 @@ function modDeny(context) {
 // Диагностика последнего чтения Internal Data. Ошибка чтения НЕ должна
 // превращаться в «verified=true, blocked=false» — это разрешило бы вход.
 var modLastReadError = null;
+var modLastWriteError = null;
 
-function modReadState(playFabId) {
+function modReadState(playFabId, key) {
+    var stateKey = key || MODERATION_KEY;
     modLastReadError = null;
 
     modLog('state-read-start', {
         playFabId: playFabId,
-        key: MODERATION_KEY
+        key: stateKey
     });
 
     var result;
@@ -8162,7 +8104,7 @@ function modReadState(playFabId) {
     try {
         result = server.GetUserInternalData({
             PlayFabId: playFabId,
-            Keys: [MODERATION_KEY]
+            Keys: [stateKey]
         });
     } catch (apiError) {
         modLastReadError = 'GetUserInternalData: ' +
@@ -8176,13 +8118,13 @@ function modReadState(playFabId) {
     }
 
     var data = (result && result.Data) ? result.Data : {};
-    var record = data[MODERATION_KEY];
+    var record = data[stateKey];
 
     if (!record) {
         // Записи нет — это не ошибка, но факт фиксируем в логе.
         modLog('state-read-empty', {
             playFabId: playFabId,
-            key: MODERATION_KEY
+            key: stateKey
         });
         return {};
     }
@@ -8209,7 +8151,7 @@ function modReadState(playFabId) {
     if (!json || json.length === 0) {
         modLog('state-read-empty', {
             playFabId: playFabId,
-            key: MODERATION_KEY,
+            key: stateKey,
             detail: 'пустая строка Value'
         });
         return {};
@@ -8251,14 +8193,41 @@ function modReadState(playFabId) {
     return parsed;
 }
 
-function modWriteState(playFabId, state) {
+function modWriteState(playFabId, state, key) {
+    var stateKey = key || MODERATION_KEY;
     var payload = {};
-    payload[MODERATION_KEY] = JSON.stringify(state);
+    payload[stateKey] = JSON.stringify(state);
 
-    server.UpdateUserInternalData({
-        PlayFabId: playFabId,
-        Data: payload
-    });
+    try {
+        var response = server.UpdateUserInternalData({
+            PlayFabId: playFabId,
+            Data: payload
+        });
+
+        var ok = !!(response && typeof response === 'object' &&
+            !response.Error && !response.error);
+        modLastWriteError = ok ? null : 'UpdateUserInternalData: no success result';
+
+        modLog('state-write', {
+            playFabId: playFabId,
+            key: stateKey,
+            ok: ok,
+            error: modLastWriteError
+        });
+
+        return { ok: ok, error: modLastWriteError };
+    } catch (apiError) {
+        modLastWriteError = 'UpdateUserInternalData: ' +
+            (apiError && apiError.message ? apiError.message : String(apiError));
+
+        modLog('state-write-error', {
+            playFabId: playFabId,
+            key: stateKey,
+            error: modLastWriteError
+        });
+
+        return { ok: false, error: modLastWriteError };
+    }
 }
 
 function modAllowedDuration(permanent, minutes) {
