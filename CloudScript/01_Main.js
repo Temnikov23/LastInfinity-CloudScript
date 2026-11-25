@@ -1,4 +1,4 @@
-// 155
+// 155а
 function GetInternalList(playFabId, key){var result = server.GetUserInternalData({PlayFabId: playFabId,Keys: [key]});
 if (!result ||!result.Data ||!result.Data[key] || !result.Data[key].Value){return [];}
 try{var list =JSON.parse(result.Data[key].Value);if (!Array.isArray(list)){return [];}return list;}
