@@ -1,4 +1,4 @@
-// 24423
+// 2026
 
 function GetInternalList(playFabId, key){var result = server.GetUserInternalData({PlayFabId: playFabId,Keys: [key]});
 if (!result ||!result.Data ||!result.Data[key] || !result.Data[key].Value){return [];}
