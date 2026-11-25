@@ -1,45 +1,12 @@
-function modMuteLog(tag, data) {
-    try {
-        log.info('[Moderation Mute] ' + tag + ': ' + JSON.stringify(data));
-    } catch (e) {
-        log.info('[Moderation Mute] ' + tag);
-    }
-}
-function modAllowedMuteDuration(permanent, minutes) {
-    if (permanent === true) return true;
-    return [5, 10, 15, 30, 60, 1440].indexOf(minutes) >= 0;
-}
-handlers.Moderation_ApplyMute = function (args, context) {
-    modMuteLog('ApplyMute started', {
-        by: modCallerId(context),
-        target: modNormalizeId(args && args.playFabId)
-    });
-    if (!modIsAdmin(context)) return modDeny(context);
-    var target = modNormalizeId(args && args.playFabId);
-    var reason = String((args && args.reason) || '').trim();
-    if (!target) {
-        return { success:false, message:'Не указан PlayFab ID игрока' };
-    }
-    if (!reason) {
-        return { success:false, message:'Укажите причину мута' };
-    }
-    var permanent = args.permanent === true;
-    var minutes = parseInt(args.durationMinutes, 10);
-    if (isNaN(minutes)) minutes = 0;
-    if (!modAllowedMuteDuration(permanent, minutes)) {
-        return { success:false, validation:true,
-                 message:'Недопустимый срок мута' };
-    }
-    var state = modReadState(target);
-    modMuteLog('InternalData read', {
-        target: target,
-        error: modLastReadError || null
-    });
-    if (modLastReadError) {
-        modMuteLog('ApplyMute failed', { target:target, error:modLastReadError });
-        return { success:false, saved:false,
-                 message:'Ошибка чтения состояния: ' + modLastReadError };
-    }
+function modMuteLog(tag, data) {try {log.info('[Moderation Mute] ' + tag + ': ' + JSON.stringify(data));} catch (e) {log.info('[Moderation Mute] ' + tag);}}
+function modAllowedMuteDuration(permanent, minutes) {if (permanent === true) return true;return [5, 10, 15, 30, 60, 1440].indexOf(minutes) >= 0;}
+handlers.Moderation_ApplyMute = function (args, context) {modMuteLog('ApplyMute started', {by: modCallerId(context),target: modNormalizeId(args && args.playFabId)});
+if (!modIsAdmin(context)) return modDeny(context);var target = modNormalizeId(args && args.playFabId);var reason = String((args && args.reason) || '').trim();
+if (!target) {return { success:false, message:'Не указан PlayFab ID игрока' };}if (!reason) {return { success:false, message:'Укажите причину мута' };}
+var permanent = args.permanent === true;var minutes = parseInt(args.durationMinutes, 10);if (isNaN(minutes)) minutes = 0;
+if (!modAllowedMuteDuration(permanent, minutes)) {return { success:false, validation:true,message:'Недопустимый срок мута' };}var state = modReadState(target);
+modMuteLog('InternalData read', {target: target,error: modLastReadError || null});if (modLastReadError) {modMuteLog('ApplyMute failed', { target:target, error:modLastReadError });
+return { success:false, saved:false,message:'Ошибка чтения состояния: ' + modLastReadError };}
     var now = Date.now();
     var expiresAt = permanent ? null : now + minutes * 60 * 1000;
 
