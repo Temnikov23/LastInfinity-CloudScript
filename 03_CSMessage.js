@@ -10,10 +10,6 @@ var MSG_EVENT_PREFIX = "MSG_E_";
 var MSG_DIALOG_PREFIX = "MSG_D_";
 var MSG_READ_PREFIX = "MSG_R_";
 
-// ----------------------------------------------------------------------------
-//  Утилиты
-// ----------------------------------------------------------------------------
-
 function msgTrim(value) {
     if (value === null || value === undefined) return "";
     return String(value).replace(/^\s+|\s+$/g, "");
