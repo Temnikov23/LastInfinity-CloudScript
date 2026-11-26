@@ -418,27 +418,62 @@ handlers.GetPrivateMessages = function (args, context) {
 handlers.GetMessagingUsers = function (args, context) {
     var me = currentPlayerId;
     var result = [];
+    var seen = {};
+    var query = args ? msgTrim(args.query || args.nickname || "") : "";
+
+    log.info("Messaging: GetMessagingUsers called");
+    log.info("Messaging: Search query: " + query);
+
+    function addUser(id, nickname) {
+        id = msgTrim(id);
+        nickname = msgTrim(nickname);
+        // Не показываем текущего игрока, некорректные/незарегистрированные профили и дубли.
+        if (!msgIsValidId(id) || id === me || seen[id]) return;
+        seen[id] = true;
+        if (result.length >= MSG_HISTORY_LIMIT) return;
+        result.push({ playFabId: id, nickname: nickname, avatarUrl: msgGetAvatarUrl(id) });
+    }
 
     try {
+        // ИСТОЧНИК 1: общий JSON-индекс ( handlers.FirstLogin из 01_Main.js ).
         var indexResult = server.GetTitleInternalData({ Keys: ["NicknameIndex"] });
-        var players = {};
-        if (indexResult && indexResult.Data && indexResult.Data.NicknameIndex &&
-            indexResult.Data.NicknameIndex.Value) {
-            players = msgParse(indexResult.Data.NicknameIndex.Value, {});
+        var hasCombined = !!(indexResult && indexResult.Data &&
+            indexResult.Data.NicknameIndex && indexResult.Data.NicknameIndex.Value);
+        log.info("Messaging: NicknameIndex exists: " + hasCombined);
+
+        if (hasCombined) {
+            var players = msgParse(indexResult.Data.NicknameIndex.Value, {});
+            for (var key in players) {
+                if (!players.hasOwnProperty(key)) continue;
+                addUser(players[key], key);
+            }
         }
 
-        for (var key in players) {
-            if (!players.hasOwnProperty(key)) continue;
-            var id = msgTrim(players[key]);
-            if (!id || id === me) continue;
-            if (result.length >= MSG_HISTORY_LIMIT) break;
-            result.push({ playFabId: id, nickname: key, avatarUrl: msgGetAvatarUrl(id) });
+        // ИСТОЧНИК 2: отдельные ключи NicknameIndex_<ник> ( handlers.registerNicknameIndex ),
+        // которые реально использует AuthManager Unity.
+        var allTitle = server.GetTitleInternalData({});
+        var prefix = "NicknameIndex_";
+        var entries = 0;
+        if (allTitle && allTitle.Data) {
+            for (var titleKey in allTitle.Data) {
+                if (!allTitle.Data.hasOwnProperty(titleKey)) continue;
+                if (titleKey.indexOf(prefix) !== 0) continue;
+                entries++;
+                var rec = allTitle.Data[titleKey];
+                if (!rec || !rec.Value) continue;
+                var nickname = titleKey.substring(prefix.length);
+                addUser(rec.Value, nickname);
+            }
         }
+        log.info("Messaging: Index entries count: " + (entries + (hasCombined ? 1 : 0)));
+
+        // ВАЖНО: текущий игрок исключён в addUser().
+        log.info("Messaging: Current player excluded: true");
     } catch (e) {
         log.error("Messaging: GetMessagingUsers: " + e);
     }
 
-    var query = args ? msgTrim(args.query || args.nickname || "") : "";
+    // Пустая строка НЕ отфильтровывает — показываем всех зарегистрированных.
     if (query) {
         var q = query.toLowerCase();
         var filtered = [];
@@ -451,6 +486,7 @@ handlers.GetMessagingUsers = function (args, context) {
         result = filtered;
     }
 
+    log.info("Messaging: Result count: " + result.length);
     return { success: true, users: result, count: result.length };
 };
 
